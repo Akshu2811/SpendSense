@@ -12,3 +12,5 @@ google-cloud-bigquery
 google-auth
 pydantic[email]
 Pillow
+google-adk
+google-genai

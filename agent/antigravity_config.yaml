@@ -1,27 +1,41 @@
-name: SpendSense Agent
-description: Behavioral finance agent — impulse purchase prevention
-version: "1.0"
+# SpendSense Agent — Google ADK Configuration
+# Deployed on Google Cloud Agent Platform
+name: spendsense_agent
+framework: google-adk
+model: gemini-2.5-flash
+description: >
+  Behavioral finance agent that stops impulse spending before it happens.
+  Built for GenZ Indian users on Google Cloud Agent Platform.
+
+tools:
+  - name: get_wallet_state
+    description: Check current spending position from BigQuery via FastAPI
+  - name: get_purchase_history
+    description: Get item-level purchase history from MongoDB via FastAPI
+  - name: sync_transactions
+    description: Trigger Fivetran MCP sync — Google Sheets to BigQuery
+  - name: fire_nudge
+    description: Send behavioral intervention nudge to user
+  - name: get_monthly_report
+    description: Generate month-end spending summary
+
+mcp_servers:
+  - name: fivetran
+    description: Transaction data pipeline — syncs Google Sheets to BigQuery
+    endpoint: ${FIVETRAN_MCP_ENDPOINT}
 
 triggers:
   - type: scheduled
     cron: "0 9 * * *"
-    action: morning_alert
-    description: Daily 9AM wallet state check and notification
-  - type: webhook
-    path: /agent/trigger
-    action: analyze_spending
-    description: On-demand spending analysis trigger
+    action: run_morning_check
+  - type: api
+    endpoint: /agent/morning-check
+    action: run_morning_check
+  - type: api
+    endpoint: /agent/pre-shop-check
+    action: run_pre_shop_check
 
-tools:
-  - name: fivetran_mcp
-    description: Trigger Fivetran sync and verify data freshness
-  - name: mongodb_atlas_mcp
-    description: Read/write user data, purchases, nudges
-
-steps:
-  morning_alert:
-    1: Trigger Fivetran sync via fivetran_mcp
-    2: Wait for sync completion (poll status every 30s, max 5 min)
-    3: Call GET /wallet-state to recalculate state
-    4: Call POST /nudges/fire with trigger_type morning_alert
-    5: Queue PWA push notification with generated copy
+deployment:
+  platform: google-cloud-agent-platform
+  project: ${GCP_PROJECT_ID}
+  region: us-central1

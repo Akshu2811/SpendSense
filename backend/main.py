@@ -47,6 +47,13 @@ app.include_router(purchases.router, prefix="/api/v1")
 app.include_router(nudges.router, prefix="/api/v1")
 app.include_router(reports.router, prefix="/api/v1")
 
+try:
+    from routers import agent as agent_router  # noqa: E402
+    app.include_router(agent_router.router, prefix="/api/v1")
+    logger.info("ADK agent router registered at /api/v1/agent")
+except Exception as _agent_err:
+    logger.warning("Agent router not loaded (%s) — app continues without ADK endpoints", _agent_err)
+
 # ── Startup ────────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup():
