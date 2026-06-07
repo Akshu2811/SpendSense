@@ -29,13 +29,15 @@
 **Framework:** Python 3.11 + FastAPI
 **Key libraries:**
 - `pymongo` — MongoDB connection
+- `google-cloud-bigquery` — BigQuery connection for transactions
 - `python-jose` — JWT token generation and validation
 - `slowapi` — rate limiting middleware
 - `python-multipart` — CSV file upload handling
 - `pandas` — CSV parsing and transaction processing
 - `httpx` — async HTTP calls to Gemini API
+- `google-auth` — GCP authentication
 
-**Security middleware (all required on Day 4):**
+**Security middleware (all required before deployment):**
 - Content-Security-Policy
 - X-Frame-Options: DENY
 - X-Content-Type-Options: nosniff
@@ -47,22 +49,43 @@
 ## Agent Orchestration
 
 **Platform:** Google Antigravity 2.0
-**Agent brain:** Gemini 3.5 Flash
+**Agent brain:** Gemini 3.5 Flash (models/gemini-3.5-flash)
 **Agent pattern:** Multi-step reasoning loop
 
 ```
 Step 1: Trigger received (manual or scheduled)
-Step 2: Call Fivetran MCP → sync latest transactions
+Step 2: Call Fivetran MCP → sync latest transactions to BigQuery
 Step 3: Verify data freshness via Fivetran MCP
-Step 4: Query MongoDB for transaction history (last 60 days)
+Step 4: Query BigQuery for spend totals and category breakdown
 Step 5: Gemini 3.5 Flash analyses patterns:
-        - Budget breach risk
-        - Duplicate purchase detection
-        - Emotional/frequency pattern
+        - Budget breach risk (from BigQuery totals)
+        - Duplicate purchase detection (from MongoDB purchases)
+        - Emotional/frequency pattern (from BigQuery frequency)
 Step 6: Determine nudge tier (light / medium / hard)
 Step 7: Generate nudge message with specific context
 Step 8: POST nudge to FastAPI → frontend renders popup
-Step 9: Log user response to MongoDB
+Step 9: Log user response to MongoDB nudges collection
+```
+
+---
+
+## Data Architecture — Critical
+
+```
+BIGQUERY — raw transaction data only
+  Source: Fivetran syncs Google Sheets here
+  Powers: budget % calculation, wallet state,
+          category spend totals, spend frequency
+  Read by: FastAPI backend via google-cloud-bigquery
+  Dataset: spendsense_data
+  Table: google_sheets.transactions
+
+MONGODB — everything else
+  Source: FastAPI writes directly
+  Powers: user auth, purchase history,
+          nudges, monthly reports
+  Collections: users, purchases, nudges, monthly_reports
+  NEVER stores raw transaction data
 ```
 
 ---
@@ -72,28 +95,35 @@ Step 9: Log user response to MongoDB
 **Primary Partner: Fivetran (submission track)**
 - MCP server: Fivetran MCP via Google Antigravity tool registry
 - Usage:
-  - Trigger data sync on demand
-  - Check sync status and data freshness
-  - Configure new data source connectors
-- Connectors used:
-  - Google Sheets connector (for Google Pay CSV export)
-  - File/CSV connector (for manual bank statement uploads)
+    - Trigger data sync on demand (Google Sheets → BigQuery)
+    - Check sync status and data freshness
+    - Verify last sync timestamp before agent analysis
+- Connector: Google Sheets → BigQuery
 - Sync schedule: Daily automatic + manual trigger on demand
 
 **Supporting: MongoDB Atlas**
 - MCP server: MongoDB Atlas MCP
-- Usage: Store and query all app data
+- Usage: Store and query user data, purchases, nudges, reports
 - Region: GCP asia-south1 (Mumbai) — data stays in India
 - Tier: M0 free cluster for hackathon
 
 ---
 
-## Database
+## Database Split
 
-**Provider:** MongoDB Atlas (M0 free tier)
-**Type:** NoSQL document store
-**Collections:** users, transactions, nudges, monthly_reports
-*(Full schema in Document 05 — Backend Schema)*
+**BigQuery (GCP) — transaction data**
+- Provider: Google BigQuery
+- Project: spendsense-[id]
+- Dataset: spendsense_data
+- Table: google_sheets.transactions
+- Filled by: Fivetran pipeline automatically
+- Read by: FastAPI for budget calculations only
+
+**MongoDB Atlas — application data**
+- Provider: MongoDB Atlas M0 free tier
+- Collections: users, purchases, nudges, monthly_reports
+- Filled by: FastAPI on user actions
+- Full schema in Document 05 — Backend Schema
 
 ---
 
@@ -106,8 +136,8 @@ Step 9: Log user response to MongoDB
 - Backend returns signed JWT token (24-hour expiry)
 - Frontend stores token in memory (not localStorage)
 - All protected API routes validate token on every request
-**Scope:** Single user demo account for hackathon
-         (no email verification, no OAuth for MVP)
+  **Scope:** Single user demo account for hackathon
+  (no email verification, no OAuth for MVP)
 
 ---
 
@@ -118,14 +148,15 @@ Step 9: Log user response to MongoDB
 - Dockerfile: multi-stage Python build
 - Port: 8080 (Cloud Run default)
 - Auto-scaling: min 0, max 2 instances (free tier)
+- Change to min 1 instance on demo day (avoid cold start)
 
 **Frontend:** Firebase Hosting or Cloud Run static serve
 - PWA build: `npm run build` → served as static files
 - Custom domain: optional for hackathon
 
-**Database:** MongoDB Atlas M0 (managed — no deployment needed)
-
-**Agent:** Google Antigravity 2.0 (managed — no deployment needed)
+**BigQuery:** Managed by GCP — no deployment needed
+**MongoDB Atlas:** Managed — no deployment needed
+**Agent:** Google Antigravity 2.0 — managed — no deployment needed
 
 ---
 
@@ -133,10 +164,11 @@ Step 9: Log user response to MongoDB
 
 | Service | Purpose | Tier |
 |---|---|---|
-| Gemini 3.5 Flash API | Agent reasoning and nudge generation | Free tier (set $10 hard cap) |
-| Fivetran MCP | Transaction data pipeline sync | Free trial |
-| MongoDB Atlas | Transaction and nudge storage | M0 free forever |
-| Google Cloud Run | Backend hosting | Free tier (2M requests/month) |
+| Gemini 3.5 Flash API | Agent reasoning and nudge generation | Free (set $10 hard cap) |
+| Fivetran MCP | Transaction data pipeline sync | Free 14-day trial |
+| Google BigQuery | Raw transaction storage + spend queries | Free 10GB/month |
+| MongoDB Atlas | User data, purchases, nudges, reports | M0 free forever |
+| Google Cloud Run | Backend hosting | Free 2M requests/month |
 | Google AI Studio | Prototyping + one-click deploy | Free |
 | Google Antigravity 2.0 | Agent orchestration | Free |
 | Google Stitch | UI design generation | Free |
@@ -148,10 +180,17 @@ Step 9: Log user response to MongoDB
 ```
 # Gemini
 GEMINI_API_KEY=
+GEMINI_MODEL=models/gemini-3.5-flash
 
 # MongoDB
 MONGODB_URI=
 MONGODB_DB_NAME=spendsense
+
+# BigQuery
+GCP_PROJECT_ID=
+BIGQUERY_DATASET=spendsense_data
+BIGQUERY_TABLE=google_sheets.transactions
+GOOGLE_APPLICATION_CREDENTIALS=path/to/service-account.json
 
 # Fivetran
 FIVETRAN_API_KEY=
@@ -164,7 +203,6 @@ JWT_ALGORITHM=HS256
 JWT_EXPIRY_HOURS=24
 
 # GCP
-GCP_PROJECT_ID=
 CLOUD_RUN_REGION=us-central1
 
 # App
@@ -176,6 +214,7 @@ ALLOWED_ORIGINS=https://your-cloudrun-url.run.app
 - All variables in `.env` file — never hardcoded
 - `.env` in `.gitignore` before first commit
 - Frontend never receives any key — all calls go through backend
+- service-account.json in `.gitignore` — never commit
 
 ---
 
@@ -183,6 +222,7 @@ ALLOWED_ORIGINS=https://your-cloudrun-url.run.app
 
 ```
 spendsense/
+├── docs/                          # All 6 MD documents
 ├── frontend/
 │   ├── public/
 │   │   ├── manifest.json          # PWA config
@@ -197,6 +237,8 @@ spendsense/
 │   │   ├── pages/
 │   │   │   ├── Onboarding.jsx      # Budget setup + data connect
 │   │   │   ├── Dashboard.jsx       # Main screen
+│   │   │   ├── ShopCheck.jsx       # Pre-purchase check screen
+│   │   │   ├── AddPurchase.jsx     # Screenshot/share/manual
 │   │   │   └── Report.jsx          # Monthly report screen
 │   │   ├── services/
 │   │   │   └── api.js              # All axios API calls
@@ -207,59 +249,71 @@ spendsense/
 │   ├── main.py                     # FastAPI app entry point
 │   ├── routers/
 │   │   ├── auth.py                 # Login/register endpoints
-│   │   ├── transactions.py         # Transaction CRUD + upload
+│   │   ├── transactions.py         # BigQuery queries + sync
+│   │   ├── purchases.py            # Screenshot/share/manual
 │   │   ├── nudges.py               # Nudge trigger + response
 │   │   └── reports.py              # Monthly report generation
 │   ├── services/
 │   │   ├── gemini_service.py       # Gemini API calls
 │   │   ├── fivetran_service.py     # Fivetran MCP calls
-│   │   └── analysis_service.py    # Nudge tier decision logic
+│   │   ├── bigquery_service.py     # BigQuery read queries
+│   │   ├── analysis_service.py     # Wallet state + nudge logic
+│   │   └── transaction_cleaner.py  # Gemini cleans raw bank CSV
 │   ├── models/
 │   │   └── schemas.py              # Pydantic request/response models
 │   ├── db/
-│   │   └── mongodb.py              # MongoDB connection + queries
+│   │   ├── mongodb.py              # MongoDB connection + queries
+│   │   └── bigquery.py             # BigQuery connection + queries
 │   ├── middleware/
 │   │   └── security.py             # Security headers + rate limiting
 │   ├── .env                        # Never commit this
-│   ├── .gitignore
 │   ├── Dockerfile
 │   └── requirements.txt
 │
 ├── agent/
 │   └── antigravity_config.yaml    # Antigravity agent definition
 │
+├── .gitignore
 ├── README.md
-└── LICENSE                        # Open source license (required)
+└── LICENSE                        # MIT — required for submission
 ```
 
 ---
 
 ## Hard Technical Constraints
 
-1. **No API keys in frontend** — ever. All Gemini, Fivetran, MongoDB
-   calls go through FastAPI backend only.
+1. **No API keys in frontend** — ever. All Gemini, Fivetran,
+   BigQuery, MongoDB calls go through FastAPI backend only.
 
-2. **India-first** — all amounts in INR (₹). MongoDB region: asia-south1.
+2. **India-first** — all amounts in INR (₹).
+   MongoDB region: asia-south1. BigQuery: GCP.
    No USD formatting anywhere in the UI.
 
-3. **Free tier only** — entire stack must run at ₹0 cost during
-   hackathon. Set hard caps on Gemini API before first deploy.
+3. **Free tier only** — entire stack must run at ₹0 cost.
+   Set hard caps on Gemini API before first deploy.
+   BigQuery free tier: 10GB storage + 1TB queries/month.
 
 4. **PWA not native** — no React Native, no Android SDK.
    PWA on Chrome Android covers the demo requirement.
 
-5. **Fivetran is primary MCP** — MongoDB MCP is supporting.
-   All agent tool calls must prioritise Fivetran for data operations.
+5. **Fivetran is primary MCP** — all transaction data
+   flows through Fivetran → BigQuery pipeline.
+   Agent must call Fivetran MCP before every analysis.
 
-6. **Gemini 3.5 Flash only** — do not use Gemini Pro or other models.
-   Flash is fast enough and stays within free quota.
+6. **BigQuery for transactions, MongoDB for everything else**
+   — never reverse this. Budget % always from BigQuery.
+   Impulse detection always from MongoDB purchases.
 
-7. **Google Antigravity 2.0 for orchestration** — no LangChain,
+7. **Gemini 3.5 Flash only** — model: models/gemini-3.5-flash
+   Do not use other models. Stays within free quota.
+
+8. **Google Antigravity 2.0 for orchestration** — no LangChain,
    no manual ADK setup. Antigravity handles the agent loop.
 
-8. **Public GitHub repo required** — open source license file
+9. **Public GitHub repo required** — MIT LICENSE file
    must be visible in the repo About section before submission.
 
 ---
 
-*Document version: 1.0 | Date: June 2026 | Hackathon: Google Cloud Agent Builder*
+*Document version: 2.0 | Date: June 2026 | Hackathon: Google Cloud Agent Builder*
+

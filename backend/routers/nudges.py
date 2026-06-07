@@ -27,24 +27,35 @@ async def fire_nudge(
     wallet = await get_full_wallet_state(user_id, db, bq_client)
     state = wallet["state"]
     spend_pct = wallet["spend_pct"]
+    category_pcts = wallet.get("category_pcts", {})
 
-    # Check for similar item in purchase history (stub: False for now)
-    has_similar = False
-    similar_item = payload.context.get("similar_item") if payload.context else None
-    if similar_item:
-        has_similar = True
+    ctx = payload.context or {}
+    similar_item = ctx.get("similar_item")
+    days_since = ctx.get("days_since")
+    category_pct = ctx.get("category_pct", max(category_pcts.values()) if category_pcts else spend_pct)
 
+    has_similar = similar_item is not None
     tier = calculate_nudge_tier(spend_pct, has_similar)
+
     copy = await generate_nudge_copy(
         state=state,
         spend_pct=spend_pct,
         platform=payload.platform,
         similar_item=similar_item,
-        days_since=payload.context.get("days_since") if payload.context else None,
-        category_pct=max(wallet["category_pcts"].values()) if wallet["category_pcts"] else 0.0,
+        days_since=days_since,
+        category_pct=float(category_pct),
     )
 
     now = datetime.now(timezone.utc)
+    nudge_ctx = {
+        "platform": payload.platform,
+        "similar_item": similar_item,
+        "similar_item_order_date": None,
+        "days_since_similar": days_since,
+        "category_pct": float(category_pct),
+        "master_pct": spend_pct,
+    }
+
     nudge_doc = {
         "user_id": ObjectId(user_id),
         "fired_at": now,
@@ -52,14 +63,7 @@ async def fire_nudge(
         "trigger_type": payload.trigger_type,
         "wallet_state_at_fire": state,
         "spend_pct_at_fire": spend_pct,
-        "context": {
-            "platform": payload.platform,
-            "similar_item": similar_item,
-            "similar_item_order_date": None,
-            "days_since_similar": payload.context.get("days_since") if payload.context else None,
-            "category_pct": max(wallet["category_pcts"].values()) if wallet["category_pcts"] else 0.0,
-            "master_pct": spend_pct,
-        },
+        "context": nudge_ctx,
         "gemini_copy": copy,
         "user_response": "pending",
         "responded_at": None,
@@ -79,7 +83,7 @@ async def fire_nudge(
         title=copy["title"],
         body=copy["body"],
         tag=copy["tag"],
-        context=nudge_doc["context"],
+        context=nudge_ctx,
     )
 
 
@@ -93,15 +97,15 @@ async def respond_to_nudge(
         raise HTTPException(status_code=503, detail="Database unavailable")
 
     try:
-        nudge = db.nudges.find_one({"_id": ObjectId(payload.nudge_id)})
+        nudge = db.nudges.find_one({"_id": ObjectId(payload.nudge_id), "user_id": ObjectId(user_id)})
     except Exception:
         raise HTTPException(status_code=404, detail="Nudge not found")
 
     if not nudge:
         raise HTTPException(status_code=404, detail="Nudge not found")
 
-    if str(nudge["user_id"]) != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    if nudge.get("user_response") not in (None, "pending"):
+        raise HTTPException(status_code=400, detail="Already responded to this nudge")
 
     now = datetime.now(timezone.utc)
     db.nudges.update_one(
@@ -109,34 +113,35 @@ async def respond_to_nudge(
         {"$set": {"user_response": payload.response, "responded_at": now}},
     )
 
-    # Update streak
     user = db.users.find_one({"_id": ObjectId(user_id)})
-    streak = user.get("streak", {}) if user else {}
+    streak = (user or {}).get("streak", {})
     current_days = int(streak.get("current_days", 0))
     best_days = int(streak.get("best_days", 0))
 
     if payload.response == "paused":
         current_days += 1
         best_days = max(best_days, current_days)
-        message = f"Nice one! Streak: {current_days} days 🔥"
-    elif payload.response == "overridden" and nudge.get("tier") == "hard":
-        current_days = 0
-        message = "Streak reset. Start fresh tomorrow 💪"
+        day_label = "day" if current_days == 1 else "days"
+        message = f"Nice one! Streak: {current_days} {day_label} 🔥"
+    elif payload.response == "overridden":
+        if nudge.get("tier") == "hard":
+            current_days = 0
+            message = "Streak reset. Start fresh tomorrow 💪"
+        else:
+            message = "Got it. No streak impact for this one."
     else:
         message = "Response logged"
 
     db.users.update_one(
         {"_id": ObjectId(user_id)},
-        {
-            "$set": {
-                "streak.current_days": current_days,
-                "streak.best_days": best_days,
-                "streak.last_updated": now,
-            }
-        },
+        {"$set": {
+            "streak.current_days": current_days,
+            "streak.best_days": best_days,
+            "streak.last_updated": now,
+        }},
     )
 
-    return {"streak_days": current_days, "message": message}
+    return {"streak_days": current_days, "message": message, "best_streak": best_days}
 
 
 @router.get("/history")
