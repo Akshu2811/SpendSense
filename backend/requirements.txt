@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pymongo[srv]
+python-jose[cryptography]
+slowapi
+python-multipart
+pandas
+httpx
+python-dotenv
+bcrypt
+google-cloud-bigquery
+google-auth
+pydantic[email]
+Pillow

@@ -1,0 +1,27 @@
+name: SpendSense Agent
+description: Behavioral finance agent — impulse purchase prevention
+version: "1.0"
+
+triggers:
+  - type: scheduled
+    cron: "0 9 * * *"
+    action: morning_alert
+    description: Daily 9AM wallet state check and notification
+  - type: webhook
+    path: /agent/trigger
+    action: analyze_spending
+    description: On-demand spending analysis trigger
+
+tools:
+  - name: fivetran_mcp
+    description: Trigger Fivetran sync and verify data freshness
+  - name: mongodb_atlas_mcp
+    description: Read/write user data, purchases, nudges
+
+steps:
+  morning_alert:
+    1: Trigger Fivetran sync via fivetran_mcp
+    2: Wait for sync completion (poll status every 30s, max 5 min)
+    3: Call GET /wallet-state to recalculate state
+    4: Call POST /nudges/fire with trigger_type morning_alert
+    5: Queue PWA push notification with generated copy
