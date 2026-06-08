@@ -1,27 +1,26 @@
-import asyncio
-import base64
-import json
-import logging
-import os
-import re
+from google import genai
+from google.genai import types
+import os, asyncio, json, re, logging
 from datetime import datetime, timezone, timedelta
 
-import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-_raw_model = os.getenv("GEMINI_MODEL", "models/gemini-1.5-flash")
-# Strip "models/" prefix — we add it in the URL
-GEMINI_MODEL = _raw_model.removeprefix("models/")
-BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-
-
-def _gemini_url() -> str:
-    return f"{BASE_URL}/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+try:
+    client = genai.Client(
+        vertexai=True,
+        project=os.getenv("GCP_PROJECT_ID", "spendsense-498709"),
+        location="global"
+    )
+    model_name = "gemini-3.1-flash-lite"
+    logger.info("Gemini 3.1 Flash Lite initialised via google-genai")
+except Exception as e:
+    client = None
+    model_name = None
+    logger.warning(f"Gemini init failed — fallback mode active: {e}")
 
 
 def _extract_json(text: str) -> dict:
@@ -40,62 +39,34 @@ def _extract_json(text: str) -> dict:
     raise ValueError(f"No JSON object found in Gemini response: {text[:200]!r}")
 
 
-def _get_text(response: dict) -> str:
-    """Extract the text content from a Gemini API response.
-
-    Handles standard and thinking-model response shapes:
-    - Standard: candidates[0].content.parts[0].text
-    - Thinking:  parts may have thought=True + a separate text part
-    """
-    try:
-        parts = response["candidates"][0]["content"]["parts"]
-        # Prefer a part that has text and is NOT a thought
-        for part in parts:
-            if part.get("thought"):
-                continue
-            txt = part.get("text", "")
-            if txt:
-                return txt
-        # Fallback: first part with any text
-        for part in parts:
-            txt = part.get("text", "")
-            if txt:
-                return txt
-        raise ValueError("All parts are empty or thoughts-only")
-    except (KeyError, IndexError) as exc:
-        raise ValueError(f"Unexpected Gemini response shape: {exc}") from exc
+def _json_config(max_tokens: int = 1024) -> types.GenerateContentConfig:
+    return types.GenerateContentConfig(temperature=0.1, max_output_tokens=max_tokens)
 
 
-def _json_generation_config(max_tokens: int = 1024) -> dict:
-    """Generation config for structured JSON outputs — disables thinking to save tokens."""
-    return {
-        "temperature": 0.1,
-        "maxOutputTokens": max_tokens,
-        "thinkingConfig": {"thinkingBudget": 0},
-    }
+def _creative_config(max_tokens: int = 2048) -> types.GenerateContentConfig:
+    return types.GenerateContentConfig(temperature=0.9, max_output_tokens=max_tokens)
 
 
-def _creative_generation_config(max_tokens: int = 2048) -> dict:
-    """Generation config for creative copy — thinking disabled to preserve tokens."""
-    return {
-        "temperature": 0.9,
-        "maxOutputTokens": max_tokens,
-        "thinkingConfig": {"thinkingBudget": 0},
-    }
+async def _call_with_retry(contents, config, max_retries: int = 1) -> str:
+    """Run synchronous google-genai call in executor; sleep 2s and retry once on quota error."""
+    def _sync():
+        return client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config,
+        )
 
-
-async def _call_gemini_with_retry(payload: dict, max_retries: int = 1) -> dict:
+    loop = asyncio.get_running_loop()
     for attempt in range(max_retries + 1):
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(_gemini_url(), json=payload)
-                response.raise_for_status()
-                return response.json()
-        except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-            if attempt < max_retries:
-                await asyncio.sleep(2 ** attempt)
+            response = await loop.run_in_executor(None, _sync)
+            return response.text
+        except Exception as exc:
+            is_quota = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc).upper()
+            if attempt < max_retries and is_quota:
+                await asyncio.sleep(2)
                 continue
-            raise exc
+            raise
 
 
 # ── Fallbacks (always available) ──────────────────────────────────────────────
@@ -133,7 +104,7 @@ def _nudge_fallback(state: str, spend_pct: float, platform: str | None) -> dict:
 # ── Function 1 — Screenshot extraction ───────────────────────────────────────
 
 async def extract_purchase_from_screenshot(image_bytes: bytes, mime_type: str = "image/jpeg") -> dict:
-    if not GEMINI_API_KEY:
+    if client is None:
         return {"error": True, "fallback": True, "message": "Gemini API key not configured"}
 
     prompt = (
@@ -156,20 +127,10 @@ async def extract_purchase_from_screenshot(image_bytes: bytes, mime_type: str = 
         "Return JSON only."
     )
 
-    image_b64 = base64.b64encode(image_bytes).decode()
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inline_data": {"mime_type": mime_type, "data": image_b64}},
-            ]
-        }],
-        "generationConfig": _json_generation_config(512),
-    }
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
 
     try:
-        response = await _call_gemini_with_retry(payload)
-        raw_text = _get_text(response)
+        raw_text = await _call_with_retry([image_part, prompt], _json_config(512))
         data = _extract_json(raw_text)
 
         # Normalise amount to float
@@ -203,7 +164,7 @@ async def generate_nudge_copy(
 ) -> dict:
     fallback = _nudge_fallback(state, spend_pct, platform)
 
-    if not GEMINI_API_KEY:
+    if client is None:
         return fallback
 
     prompt = (
@@ -229,14 +190,8 @@ async def generate_nudge_copy(
         '{ "title": "...", "body": "...", "tag": "..." }'
     )
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": _creative_generation_config(512),
-    }
-
     try:
-        response = await _call_gemini_with_retry(payload)
-        raw_text = _get_text(response)
+        raw_text = await _call_with_retry(prompt, _creative_config(512))
         data = _extract_json(raw_text)
         # Validate required keys
         if not all(k in data for k in ("title", "body", "tag")):
@@ -255,7 +210,7 @@ async def check_duplicate_purchase(new_item: str, recent_purchases: list) -> dic
     if not recent_purchases:
         return {**_safe, "confidence": "low"}
 
-    if not GEMINI_API_KEY:
+    if client is None:
         return _safe
 
     formatted = "\n".join([
@@ -278,14 +233,8 @@ async def check_duplicate_purchase(new_item: str, recent_purchases: list) -> dic
         '"days_since": number_or_null, "confidence": "high|medium|low" }'
     )
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": _json_generation_config(256),
-    }
-
     try:
-        response = await _call_gemini_with_retry(payload)
-        raw_text = _get_text(response)
+        raw_text = await _call_with_retry(prompt, _json_config(256))
         data = _extract_json(raw_text)
         return {
             "is_duplicate": bool(data.get("is_duplicate", False)),
@@ -301,7 +250,7 @@ async def check_duplicate_purchase(new_item: str, recent_purchases: list) -> dic
 # ── Function 4 — Product extraction for Shop Check ───────────────────────────
 
 async def extract_product_for_check(image_bytes: bytes, mime_type: str = "image/jpeg") -> dict:
-    if not GEMINI_API_KEY:
+    if client is None:
         return {"error": True, "item_description": None}
 
     prompt = (
@@ -314,20 +263,10 @@ async def extract_product_for_check(image_bytes: bytes, mime_type: str = "image/
         '"category": "clothing|electronics|food|health|entertainment|other" }'
     )
 
-    image_b64 = base64.b64encode(image_bytes).decode()
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inline_data": {"mime_type": mime_type, "data": image_b64}},
-            ]
-        }],
-        "generationConfig": _json_generation_config(256),
-    }
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
 
     try:
-        response = await _call_gemini_with_retry(payload)
-        raw_text = _get_text(response)
+        raw_text = await _call_with_retry([image_part, prompt], _json_config(256))
         data = _extract_json(raw_text)
         return {
             "item_description": data.get("item_description") or data.get("item_name"),
@@ -368,7 +307,7 @@ async def generate_morning_copy(
     }
     fallback = morning_fallbacks.get(state, morning_fallbacks["calm"])
 
-    if not GEMINI_API_KEY:
+    if client is None:
         return fallback
 
     prompt = (
@@ -384,14 +323,8 @@ async def generate_morning_copy(
         'Return JSON only: { "title": "...", "body": "..." }'
     )
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": _creative_generation_config(256),
-    }
-
     try:
-        response = await _call_gemini_with_retry(payload)
-        raw_text = _get_text(response)
+        raw_text = await _call_with_retry(prompt, _creative_config(256))
         data = _extract_json(raw_text)
         if not all(k in data for k in ("title", "body")):
             raise ValueError("Missing keys")

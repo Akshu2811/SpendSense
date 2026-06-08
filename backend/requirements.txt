@@ -14,3 +14,5 @@ pydantic[email]
 Pillow
 google-adk
 google-genai
+google-cloud-aiplatform
+vertexai
