@@ -1,0 +1,2 @@
+"use strict";(self.webpackChunkspendsense=self.webpackChunkspendsense||[]).push([[892],{892(e,s,n){n.r(s),n.d(s,{default:()=>c});n(43);var t=n(579);function c(){return(0,t.jsx)("div",{className:"min-h-screen flex items-center justify-center",children:(0,t.jsx)("p",{style:{color:"var(--text-muted)"},children:"Nudge \u2014 coming soon"})})}}}]);
+//# sourceMappingURL=892.3f8011b1.chunk.js.map

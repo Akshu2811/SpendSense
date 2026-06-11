@@ -55,6 +55,8 @@ class BudgetUpdate(BaseModel):
 class WalletStateResponse(BaseModel):
     state: str
     spend_pct: float
+    spent_amount: Optional[float] = None
+    budget_amount: Optional[float] = None
     category_pcts: dict
     last_updated: Optional[datetime] = None
     stale: bool = False
@@ -113,3 +115,4 @@ class MonthlyReportResponse(BaseModel):
     nudge_summary: dict
     streak_summary: dict
     insights: dict
+    stale: bool = False

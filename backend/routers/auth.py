@@ -178,6 +178,25 @@ async def budget_update(payload: BudgetUpdate, user_id: str = Depends(get_curren
     return {"message": "Budget updated"}
 
 
+@router.delete("/auth/account")
+async def delete_account(user_id: str = Depends(get_current_user)):
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    try:
+        oid = ObjectId(user_id)
+        db.purchases.delete_many({"user_id": oid})
+        db.nudges.delete_many({"user_id": oid})
+        db.monthly_reports.delete_many({"user_id": oid})
+        db.users.delete_one({"_id": oid})
+    except Exception as exc:
+        logger.error("delete_account failed for user %s: %s", user_id, exc)
+        raise HTTPException(status_code=500, detail="Account deletion failed. Please try again.")
+
+    return {"message": "Account deleted successfully"}
+
+
 @router.get("/budget/current")
 async def budget_current(user_id: str = Depends(get_current_user)):
     from datetime import date  # noqa: PLC0415
@@ -208,10 +227,13 @@ async def budget_current(user_id: str = Depends(get_current_user)):
         for cat in category_totals
     }
 
+    streak = user.get("streak", {})
     return {
         "master_monthly": master_monthly,
         "categories": categories,
         "current_spend": current_spend,
         "spend_pct": round(spend_pct, 2),
         "category_pcts": category_pcts,
+        "current_streak": int(streak.get("current_days", 0)),
+        "best_streak": int(streak.get("best_days", 0)),
     }

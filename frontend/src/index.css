@@ -1,0 +1,276 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Root design tokens ─────────────────────────────────────────────────── */
+:root {
+  --transition-speed: 1.5s;
+  --font-primary: 'DM Sans', system-ui, -apple-system, sans-serif;
+
+  --success: #4ECCA3;
+  --card-bg: rgba(255, 255, 255, 0.07);
+  --card-border: rgba(255, 255, 255, 0.12);
+  --card-radius: 16px;
+
+  --text-primary: #FFFFFF;
+  --text-muted: rgba(255, 255, 255, 0.5);
+  --text-faint: rgba(255, 255, 255, 0.25);
+
+  /* Default to calm state */
+  --bg: #050D1A;
+  --bg-secondary: #0A1628;
+  --orb: #00B4D8;
+  --orb-glow: rgba(0, 180, 216, 0.35);
+  --accent: #4FC3F7;
+  --accent-muted: rgba(79, 195, 247, 0.2);
+
+  /* Category colours */
+  --food: #FF6B4A;
+  --fashion: #A89CF0;
+  --electronics: #89B4FF;
+  --entertainment: #F15BB5;
+  --health: #4ECCA3;
+  --others: #888780;
+}
+
+/* ── Wallet state classes ─────────────────────────────────────────────────── */
+.state-calm {
+  --bg: #050D1A;
+  --bg-secondary: #0A1628;
+  --orb: #00B4D8;
+  --orb-glow: rgba(0, 180, 216, 0.35);
+  --accent: #4FC3F7;
+  --accent-muted: rgba(79, 195, 247, 0.2);
+}
+
+.state-aware {
+  --bg: #120D05;
+  --bg-secondary: #1E1508;
+  --orb: #F77F00;
+  --orb-glow: rgba(247, 127, 0, 0.35);
+  --accent: #FFB347;
+  --accent-muted: rgba(255, 179, 71, 0.2);
+}
+
+.state-urgent {
+  --bg: #150805;
+  --bg-secondary: #210D07;
+  --orb: #E63946;
+  --orb-glow: rgba(230, 57, 70, 0.35);
+  --accent: #FF7043;
+  --accent-muted: rgba(255, 112, 67, 0.2);
+}
+
+.state-crisis {
+  --bg: #0D0514;
+  --bg-secondary: #150820;
+  --orb: #9B5DE5;
+  --orb-glow: rgba(155, 93, 229, 0.35);
+  --accent: #CE93D8;
+  --accent-muted: rgba(206, 147, 216, 0.2);
+}
+
+/* ── Base styles ─────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-primary);
+  background-color: var(--bg);
+  color: var(--text-primary);
+  transition: background-color var(--transition-speed) ease;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Glass card utility ──────────────────────────────────────────────────── */
+.glass-card {
+  background: var(--card-bg);
+  border: 0.5px solid var(--card-border);
+  border-radius: var(--card-radius);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* ── Base form elements ──────────────────────────────────────────────────── */
+input,
+textarea,
+select {
+  font-family: var(--font-primary);
+  background: rgba(255, 255, 255, 0.06);
+  border: 0.5px solid var(--card-border);
+  border-radius: 12px;
+  color: var(--text-primary);
+  font-size: 14px;
+  padding: 12px 16px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-faint);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+select option {
+  background: #1a1a2e;
+  color: var(--text-primary);
+}
+
+button {
+  font-family: var(--font-primary);
+  cursor: pointer;
+  border: none;
+  outline: none;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 14px;
+  height: 48px;
+  padding: 0 20px;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+
+button:active {
+  transform: scale(0.97);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #050D1A;
+  width: 100%;
+}
+
+.btn-secondary {
+  background: var(--card-bg);
+  border: 0.5px solid var(--card-border);
+  color: var(--text-muted);
+  width: 100%;
+}
+
+.btn-destructive {
+  background: rgba(230, 57, 70, 0.2);
+  color: #FF7043;
+  width: 100%;
+}
+
+/* ── Keyframe animations ─────────────────────────────────────────────────── */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes orb-idle {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+}
+
+@keyframes orb-pulse {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+@keyframes slide-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ── Animation utility classes ──────────────────────────────────────────── */
+.orb-idle {
+  animation: orb-idle 3s ease-in-out infinite;
+}
+
+.orb-pulse {
+  animation: orb-pulse 0.4s ease-out forwards;
+}
+
+.slide-up {
+  animation: slide-up 0.3s ease-out forwards;
+}
+
+.fade-in {
+  animation: fade-in 0.4s ease-out forwards;
+}
+
+.shimmer-card {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 25%,
+    rgba(255, 255, 255, 0.09) 50%,
+    rgba(255, 255, 255, 0.04) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite;
+  border-radius: var(--card-radius);
+}
+
+/* ── Field label utility ─────────────────────────────────────────────────── */
+.field-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}

@@ -1,7 +1,8 @@
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from db.bigquery import get_bigquery_client
 from db.mongodb import get_db
@@ -10,6 +11,7 @@ from routers.auth import get_current_user
 from services.analysis_service import get_full_wallet_state
 from services.gemini_service import (
     check_duplicate_purchase,
+    extract_from_multiple_screenshots,
     extract_product_for_check,
     extract_purchase_from_screenshot,
 )
@@ -130,6 +132,68 @@ async def upload_screenshot(
 
     safe_doc = _serialize_purchase({**doc, "_id": result.inserted_id})
     return {"status": "saved", "purchase": safe_doc}
+
+
+# ── Multi-screenshot upload ───────────────────────────────────────────────────
+
+@router.post("/screenshot-multi")
+async def upload_multiple_screenshots(
+    file_0: Optional[UploadFile] = File(None),
+    file_1: Optional[UploadFile] = File(None),
+    file_2: Optional[UploadFile] = File(None),
+    file_count: int = Form(...),
+    user_id: str = Depends(get_current_user),
+):
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    if file_count < 1 or file_count > 3:
+        raise HTTPException(status_code=400, detail="file_count must be between 1 and 3")
+
+    raw_files = [file_0, file_1, file_2][:file_count]
+    images: list[bytes] = []
+    mime_types: list[str] = []
+
+    for f in raw_files:
+        if f is None:
+            raise HTTPException(status_code=400, detail="Expected file missing")
+        if f.content_type not in ALLOWED_MIME:
+            raise HTTPException(status_code=400, detail="Only JPEG, PNG, and WebP images accepted")
+        data = await f.read()
+        if len(data) > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=400, detail="Image too large. Maximum size is 5MB.")
+        images.append(data)
+        mime_types.append(f.content_type or "image/jpeg")
+
+    extracted = await extract_from_multiple_screenshots(images, mime_types)
+
+    if extracted.get("error"):
+        return {
+            "status": "extraction_failed",
+            "message": "Couldn't read these images. Try clearer screenshots or add manually.",
+        }
+
+    doc = _build_purchase_doc(user_id, extracted, capture_method="screenshot_multi")
+
+    if _check_dedup(db, user_id, doc):
+        return {"status": "already_logged", "message": "This purchase is already in your history ✓"}
+
+    if doc["order_date_confidence"] == "estimated":
+        return {
+            "status": "date_unconfirmed",
+            "message": "Couldn't read the order date. We've used yesterday as the purchase date. Is that correct?",
+            "actions": ["confirm", "pick_date"],
+            "preview": {k: v for k, v in extracted.items() if k != "raw_extracted_text"},
+        }
+
+    try:
+        result = db.purchases.insert_one(doc)
+    except Exception:
+        return {"status": "already_logged", "message": "This purchase is already in your history ✓"}
+
+    safe_doc = _serialize_purchase({**doc, "_id": result.inserted_id})
+    return {"status": "success", "purchase": safe_doc}
 
 
 # ── Confirm date (after unconfirmed screenshot) ───────────────────────────────

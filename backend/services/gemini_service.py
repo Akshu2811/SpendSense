@@ -132,6 +132,10 @@ async def extract_purchase_from_screenshot(image_bytes: bytes, mime_type: str = 
     try:
         raw_text = await _call_with_retry([image_part, prompt], _json_config(512))
         data = _extract_json(raw_text)
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected response format")
 
         # Normalise amount to float
         data["amount"] = float(str(data.get("amount", 0)).replace(",", ""))
@@ -152,6 +156,67 @@ async def extract_purchase_from_screenshot(image_bytes: bytes, mime_type: str = 
         return {"error": True, "fallback": True, "message": "Could not extract purchase details"}
 
 
+# ── Function 1b — Multi-screenshot extraction ────────────────────────────────
+
+async def extract_from_multiple_screenshots(
+    images: list[bytes],
+    mime_types: list[str],
+) -> dict:
+    if client is None:
+        return {"error": True, "fallback": True, "message": "Gemini API key not configured"}
+
+    parts = []
+    for img_bytes, mime in zip(images, mime_types):
+        parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime))
+
+    n = len(images)
+    parts.append(
+        f"These {n} screenshot{'s are' if n > 1 else ' is'} from the same order confirmation.\n"
+        "They may show different parts — items on one, date/total on another.\n\n"
+        "Extract the complete order details by combining all screenshots.\n"
+        "Return JSON only:\n"
+        "{\n"
+        '  "item_name": "exact product name",\n'
+        '  "platform": "Myntra|Amazon|Flipkart|Zepto|Blinkit|Swiggy|Ajio|Nykaa|Other",\n'
+        '  "amount": "number only (total order amount)",\n'
+        '  "order_date": "date shown ON THE RECEIPT in YYYY-MM-DD. '
+        "Read from whichever screenshot shows it. If not visible in any: return null\",\n"
+        '  "category": "food_dining_delivery|shopping_fashion|electronics_tech|'
+        'entertainment_subs|health_lifestyle|others",\n'
+        '  "is_consumable": "true if grocery/medicine/daily essential, false otherwise",\n'
+        '  "subcategory": "ethnic_wear|sneakers|skincare|gadget|subscription|etc",\n'
+        '  "items_found": ["list", "of", "all", "item", "names", "if", "multiple"]\n'
+        "}\n\n"
+        "CRITICAL: Combine information across all screenshots. "
+        "order_date must come from receipt only. Never use today's date. "
+        "Return JSON only."
+    )
+
+    try:
+        raw_text = await _call_with_retry(parts, _json_config(512))
+        parsed = _extract_json(raw_text)
+        if isinstance(parsed, list):
+            parsed = parsed[0] if parsed else {}
+        if not isinstance(parsed, dict):
+            raise ValueError("Unexpected response format")
+
+        parsed["amount"] = float(str(parsed.get("amount", 0)).replace(",", ""))
+        parsed["is_consumable"] = bool(parsed.get("is_consumable", False))
+        parsed["raw_extracted_text"] = raw_text
+
+        if parsed.get("order_date"):
+            parsed["order_date_confidence"] = "confirmed"
+        else:
+            yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+            parsed["order_date"] = yesterday
+            parsed["order_date_confidence"] = "estimated"
+
+        return parsed
+    except Exception as exc:
+        logger.error("extract_from_multiple_screenshots failed: %s", exc)
+        return {"error": True, "fallback": True, "message": "Could not extract purchase details"}
+
+
 # ── Function 2 — Nudge copy generation ───────────────────────────────────────
 
 async def generate_nudge_copy(
@@ -160,19 +225,27 @@ async def generate_nudge_copy(
     platform: str | None,
     similar_item: str | None,
     days_since: int | None,
-    category_pct: float,
+    category_pct: float | None,
 ) -> dict:
     fallback = _nudge_fallback(state, spend_pct, platform)
 
     if client is None:
         return fallback
 
+    if category_pct is not None:
+        budget_line = f"Category budget used: {category_pct:.0f}% — reference this percentage in the copy\n"
+    else:
+        budget_line = (
+            f"Overall budget used: {spend_pct:.0f}% — reference this percentage in the copy. "
+            "Do NOT mention any specific category percentage.\n"
+        )
+
     prompt = (
         f"User wallet state: {state}\n"
         f"Overall budget: {spend_pct:.0f}% used\n"
-        f"Platform: {platform or 'unknown'}\n"
+        f"Platform the user is about to open: {platform or 'unknown'}\n"
         f"Similar item bought: {similar_item or 'none'} ({days_since or 'N/A'} days ago)\n"
-        f"Category budget: {category_pct:.0f}% used\n\n"
+        + budget_line + "\n"
         "Generate a SpendSense push notification for a GenZ Indian user.\n"
         "Two parts:\n"
         "1. title: punchy, max 8 words, GenZ language\n"
@@ -183,7 +256,8 @@ async def generate_nudge_copy(
         "- aware state: funny, slightly dramatic\n"
         "- urgent state: sarcastic, concerned, relatable\n"
         "- crisis state: unhinged, dramatic, but NEVER shameful\n"
-        "- Always reference Indian context (zepto, myntra, blinkit, maggi, UPI)\n"
+        f"- Only reference {platform or 'this app'} by name — never mention other shopping apps unless the user has purchase history there\n"
+        "- You may reference Indian GenZ culture (maggi, UPI, 'not it', 'the math') but name only the platform above as the shopping destination\n"
         "- Never use formal language. Never shame the user.\n"
         "- If similar_item exists: reference it specifically in the body\n\n"
         'Return JSON only — no markdown, no explanation:\n'

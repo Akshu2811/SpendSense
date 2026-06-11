@@ -1,0 +1,27 @@
+{
+  "short_name": "SpendSense",
+  "name": "SpendSense — Stop Impulse Spending",
+  "description": "AI agent that stops impulse buys before they happen",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "logo192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "logo512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#050D1A",
+  "background_color": "#050D1A",
+  "orientation": "portrait-primary"
+}

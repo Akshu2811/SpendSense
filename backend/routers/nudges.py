@@ -13,6 +13,9 @@ from services.gemini_service import generate_nudge_copy
 
 router = APIRouter(prefix="/nudges", tags=["nudges"])
 
+FASHION_PLATFORMS = {"myntra", "ajio", "meesho", "nykaa"}
+QC_PLATFORMS      = {"zepto", "blinkit", "swiggy"}
+
 
 @router.post("/fire", response_model=NudgeResponse)
 @limiter.limit("10/minute")
@@ -32,10 +35,23 @@ async def fire_nudge(
     ctx = payload.context or {}
     similar_item = ctx.get("similar_item")
     days_since = ctx.get("days_since")
-    category_pct = ctx.get("category_pct", max(category_pcts.values()) if category_pcts else spend_pct)
+
+    # Resolve category_pct: use explicit context value, then platform-based lookup,
+    # then None for general apps — never fall back to max() across all categories.
+    platform_lower = (payload.platform or "").lower()
+    ctx_category_pct = ctx.get("category_pct")  # None when missing or explicitly null
+
+    if ctx_category_pct is not None:
+        category_pct: float | None = float(ctx_category_pct)
+    elif payload.trigger_type == "pre_shop_check" and platform_lower in FASHION_PLATFORMS:
+        category_pct = category_pcts.get("shopping_fashion")
+    elif payload.trigger_type == "pre_shop_check" and platform_lower in QC_PLATFORMS:
+        category_pct = category_pcts.get("food_dining_delivery")
+    else:
+        category_pct = None  # general apps (Amazon, Flipkart) — use master_pct only
 
     has_similar = similar_item is not None
-    tier = calculate_nudge_tier(spend_pct, has_similar)
+    tier = calculate_nudge_tier(spend_pct, has_similar, float(category_pct or 0))
 
     copy = await generate_nudge_copy(
         state=state,
@@ -43,7 +59,7 @@ async def fire_nudge(
         platform=payload.platform,
         similar_item=similar_item,
         days_since=days_since,
-        category_pct=float(category_pct),
+        category_pct=category_pct,
     )
 
     now = datetime.now(timezone.utc)
@@ -52,7 +68,7 @@ async def fire_nudge(
         "similar_item": similar_item,
         "similar_item_order_date": None,
         "days_since_similar": days_since,
-        "category_pct": float(category_pct),
+        "category_pct": float(category_pct) if category_pct is not None else None,
         "master_pct": spend_pct,
     }
 

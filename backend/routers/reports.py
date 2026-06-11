@@ -23,6 +23,16 @@ EMPTY_CATEGORIES = {
     "others": 0.0,
 }
 
+PLATFORM_TO_CATEGORY = {
+    "myntra": "shopping_fashion",
+    "ajio": "shopping_fashion",
+    "nykaa": "shopping_fashion",
+    "meesho": "shopping_fashion",
+    "zepto": "food_dining_delivery",
+    "blinkit": "food_dining_delivery",
+    "swiggy": "food_dining_delivery",
+}
+
 
 @router.get("/current-month", response_model=MonthlyReportResponse)
 async def current_month_report(user_id: str = Depends(get_current_user)):
@@ -35,6 +45,7 @@ async def current_month_report(user_id: str = Depends(get_current_user)):
     # ── BigQuery: budget data ─────────────────────────────────────────────────
     total_spent = await get_monthly_total(GCP_PROJECT_ID, month_start_date)
     category_totals = await get_category_breakdown(GCP_PROJECT_ID, month_start_date)
+    stale = False
 
     # ── MongoDB: user settings ────────────────────────────────────────────────
     master_budget = 15000.0
@@ -51,6 +62,12 @@ async def current_month_report(user_id: str = Depends(get_current_user)):
                 if v is not None
             }
             streak_data = user.get("streak", streak_data)
+            # BigQuery returned 0 — fall back to cached wallet state
+            if total_spent == 0.0:
+                cached_pct = float(user.get("wallet_state", {}).get("spend_pct", 0) or 0)
+                if cached_pct > 0:
+                    total_spent = round(master_budget * cached_pct / 100, 2)
+                    stale = True
 
     default_cat = master_budget / 6 if master_budget > 0 else 1
     utilisation_pct = round((total_spent / master_budget * 100), 2) if master_budget > 0 else 0.0
@@ -104,24 +121,23 @@ async def current_month_report(user_id: str = Depends(get_current_user)):
             avg_purchase = (sum(amounts) / len(amounts)) if amounts else 800.0
             estimated_saved = round(avg_purchase * total_paused, 2)
 
-        # Top category by purchase count
-        purchases_cursor = db.purchases.find(
-            {"user_id": ObjectId(user_id), "order_date": {"$gte": month_start}},
-            {"category": 1},
-        )
-        cat_counts = Counter(p.get("category", "others") for p in purchases_cursor)
-        if cat_counts:
-            top_category = cat_counts.most_common(1)[0][0]
-        nudge_count_by_category = dict(cat_counts)
-
-        # Top platform
-        platform_cursor = db.nudges.find(base_filter, {"context.platform": 1})
+        # Top category and platform — derived from nudges (where impulse fired)
+        all_nudges = list(db.nudges.find(base_filter, {"context.platform": 1}))
         platform_counts = Counter(
-            n.get("context", {}).get("platform") for n in platform_cursor
+            n["context"]["platform"] for n in all_nudges
             if n.get("context", {}).get("platform")
+        )
+        nudge_cat_counts = Counter(
+            PLATFORM_TO_CATEGORY.get(
+                ((n.get("context") or {}).get("platform") or "").lower(), "others"
+            )
+            for n in all_nudges
         )
         if platform_counts:
             top_platform = platform_counts.most_common(1)[0][0]
+        if nudge_cat_counts:
+            top_category = nudge_cat_counts.most_common(1)[0][0]
+        nudge_count_by_category = dict(nudge_cat_counts)
 
         nudge_summary = {
             "total_fired": total_fired,
@@ -169,4 +185,5 @@ async def current_month_report(user_id: str = Depends(get_current_user)):
         nudge_summary=nudge_summary,
         streak_summary=report_doc["streak_summary"],
         insights=report_doc["insights"],
+        stale=stale,
     )

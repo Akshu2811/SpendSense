@@ -26,10 +26,12 @@ def calculate_wallet_state(spend_pct: float) -> str:
     return "crisis"
 
 
-def calculate_nudge_tier(budget_pct: float, has_similar_item: bool) -> str:
+def calculate_nudge_tier(budget_pct: float, has_similar_item: bool, category_pct: float = 0.0) -> str:
     if budget_pct > 85 and has_similar_item:
         return "hard"
     if budget_pct > 70 or has_similar_item:
+        return "medium"
+    if category_pct > 85:
         return "medium"
     return "light"
 
@@ -62,16 +64,19 @@ async def get_full_wallet_state(user_id, db, bq_client) -> dict:
     # Query BigQuery for total spend
     total_spent = await get_monthly_total(GCP_PROJECT_ID, month_start)
 
-    # If BigQuery returned 0 and cache is fresh (within 1 hour), return stale cache
-    if total_spent == 0.0 and last_calculated is not None:
-        cache_age = now - (
-            last_calculated if last_calculated.tzinfo else last_calculated.replace(tzinfo=timezone.utc)
-        )
-        if cache_age < timedelta(hours=1) and cached_state:
+    # If BigQuery returned 0 and the MongoDB cache has real spend data, always
+    # return the cache — BigQuery may simply be offline or have no data yet.
+    # Never overwrite a non-zero cached state with a 0% recalculation.
+    if total_spent == 0.0 and cached_state:
+        cached_pct = float(cached_state.get("spend_pct", 0))
+        if cached_pct > 0:
+            cached_cat_pcts = cached_state.get("category_pcts") or dict(EMPTY_CATEGORIES)
             return {
                 "state": cached_state.get("current", "calm"),
-                "spend_pct": float(cached_state.get("spend_pct", 0)),
-                "category_pcts": dict(EMPTY_CATEGORIES),
+                "spend_pct": cached_pct,
+                "spent_amount": round(master_monthly * cached_pct / 100, 2),
+                "budget_amount": master_monthly,
+                "category_pcts": cached_cat_pcts,
                 "last_updated": last_calculated,
                 "stale": True,
             }
@@ -107,6 +112,8 @@ async def get_full_wallet_state(user_id, db, bq_client) -> dict:
     return {
         "state": state,
         "spend_pct": round(spend_pct, 2),
+        "spent_amount": round(total_spent, 2),
+        "budget_amount": master_monthly,
         "category_pcts": category_pcts,
         "last_updated": now,
         "stale": False,
